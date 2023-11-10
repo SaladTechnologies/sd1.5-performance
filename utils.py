@@ -12,6 +12,7 @@ import asyncio
 import aioboto3
 from aioboto3.session import Session
 import os
+import copy
 import dotenv
 
 dotenv.load_dotenv(".env", override=True)
@@ -36,6 +37,11 @@ reporting_headers = {
 salad_api_base_url = "https://api.salad.com/api/public"
 
 dynamodb = boto3.client("dynamodb", region_name="us-east-2")
+r2_session = boto3.Session(profile_name="r2")
+s3 = r2_session.client("s3")
+
+bucket_name = "salad-benchmark-public-assets"
+image_upload_prefix = "sd-1-5-qr-images/"
 
 
 def query_dynamodb_table(benchmark_id):
@@ -177,8 +183,7 @@ async def queue_jobs(
     async with Session().client("sqs", region_name="us-east-2") as client:
         queue_url = client.get_queue_url(QueueName=get_queue_name(queue_id))["QueueUrl"]
         for job in jobs:
-            job_id = str(uuid.uuid4())
-            job["id"] = job_id
+            job_id = job["id"]
             batch.append(
                 {
                     "Id": job_id,
@@ -280,3 +285,49 @@ def start_all_container_groups():
 def delete_all_container_groups():
     for container_group in list_all_container_groups():
         delete_container_group(container_group["name"])
+
+
+def deep_merge(dict1, dict2):
+    """
+    Recursively merge two dictionaries. Values from dict2 will override those from dict1.
+    Both dictionaries should not contain cycles.
+
+    Args:
+    dict1 (dict): The first dictionary.
+    dict2 (dict): The second dictionary to merge with the first one.
+
+    Returns:
+    dict: A new dictionary with the merged values.
+    """
+    merged = copy.deepcopy(dict1)  # Start with dict1 keys and values
+    for key, value in dict2.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            # If both values are dictionaries, merge them recursively
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            # Otherwise, set the value from dict2, overriding the one in dict1
+            merged[key] = value
+    return merged
+
+
+def get_signed_upload_url(file_name: str, file_type: str):
+    """
+    Get a signed URL for uploading a file to S3.
+
+    Args:
+    file_name (str): The name of the file to upload.
+    file_type (str): The MIME type of the file to upload.
+
+    Returns:
+    str: The signed URL.
+    """
+    response = s3.generate_presigned_url(
+        ClientMethod="put_object",
+        Params={
+            "Bucket": bucket_name,
+            "Key": image_upload_prefix + file_name,
+            "ContentType": file_type,
+        },
+        ExpiresIn=604800,  # 7 days
+    )
+    return response
