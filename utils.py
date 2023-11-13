@@ -36,12 +36,14 @@ reporting_headers = {
 
 salad_api_base_url = "https://api.salad.com/api/public"
 
-dynamodb = boto3.client("dynamodb", region_name="us-east-2")
+notebook_session = boto3.Session(profile_name="notebook")
+dynamodb = notebook_session.client("dynamodb", region_name="us-east-2")
 r2_session = boto3.Session(profile_name="r2")
 s3 = r2_session.client("s3")
 
 bucket_name = "salad-benchmark-public-assets"
 image_upload_prefix = "sd-1-5-qr-images/"
+public_bucket_url = "salad-benchmark-assets.download"
 
 
 def query_dynamodb_table(benchmark_id):
@@ -154,9 +156,8 @@ def get_queue_name(queue_id: str):
 
 
 def get_job_from_queue_service(queue_id: str):
-    response = requests.get(
-        f"{queue_service_url}${queue_id}", headers=reporting_headers
-    )
+    response = requests.get(f"{queue_service_url}{queue_id}", headers=reporting_headers)
+    print(response.json())
     if response.status_code == 200:
         return response.json()
     else:
@@ -179,9 +180,12 @@ async def queue_jobs(
     # Initialize the queue by requesting a job. There won't be one, so we
     # don't need to do anything with it.
     get_job_from_queue_service(queue_id)
+    print(f"Queueing jobs for queue {get_queue_name(queue_id)}...", flush=True)
 
     async with Session().client("sqs", region_name="us-east-2") as client:
-        queue_url = client.get_queue_url(QueueName=get_queue_name(queue_id))["QueueUrl"]
+        queue_url = (await client.get_queue_url(QueueName=get_queue_name(queue_id)))[
+            "QueueUrl"
+        ]
         for job in jobs:
             job_id = job["id"]
             batch.append(
@@ -198,7 +202,7 @@ async def queue_jobs(
                 batch = []
                 if len(batches) == concurrency:
                     # wait for all the batches to finish
-                    await asyncio.gather(*batches)
+                    batches = await asyncio.gather(*batches)
                     total += sum([len(b["Successful"]) for b in batches])
                     print(f"Sent {total} jobs so far.", flush=True, end="\r")
                     batches = []
@@ -328,6 +332,7 @@ def get_signed_upload_url(file_name: str, file_type: str):
             "Key": image_upload_prefix + file_name,
             "ContentType": file_type,
         },
+        HttpMethod="PUT",
         ExpiresIn=604800,  # 7 days
     )
     return response
