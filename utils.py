@@ -219,6 +219,21 @@ async def queue_jobs(
         return True
 
 
+async def purge_queue(queue_id: str):
+    print(f"Purging queue {get_queue_name(queue_id)}...", flush=True)
+    async with Session().client("sqs", region_name="us-east-2") as client:
+        queue_url = (await client.get_queue_url(QueueName=get_queue_name(queue_id)))[
+            "QueueUrl"
+        ]
+        await client.purge_queue(QueueUrl=queue_url)
+        return True
+
+
+async def purge_all_queues(all_queues):
+    for queue_id in all_queues:
+        await purge_queue(queue_id)
+
+
 def list_all_objects(s3: boto3.client, bucket: str, prefix: str = ""):
     """List all objects in an S3 bucket."""
     paginator = s3.get_paginator("list_objects_v2")
