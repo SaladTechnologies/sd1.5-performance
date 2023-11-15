@@ -73,15 +73,25 @@ def get_rows_for_pd(benchmark_id):
     for item in query_dynamodb_table(benchmark_id):
         timestamp = item["timestamp"]["N"]
         data = json.loads(item["data"]["S"])
-        system = data["system_info"]
-        del data["system_info"]
-
-        row = {**data, **system, "timestamp": timestamp}
+        row = {
+            "timestamp": timestamp,
+            "batch_size": data["job"]["batch_size"],
+            "image_size": data["imageSize"],
+            "backend": data["backend"],
+            "salad_machine_id": data["saladMachineId"],
+            "images": data["downloadUrls"],
+            "qr_data": data["job"]["qr_params"]["data"],
+            "prompt": data["job"]["stable_diffusion_params"]["prompt"],
+            "steps": data["job"]["stable_diffusion_params"]["num_inference_steps"],
+            **data["meta"],
+        }
         yield row
 
 
 def get_df_for_benchmark(benchmark_id):
     df = pd.DataFrame(get_rows_for_pd(benchmark_id))
+    if len(df) == 0:
+        return None
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df
 
@@ -255,10 +265,14 @@ def get_file_from_bucket(s3: boto3.client, bucket: str, key: str):
     return response["Body"].read()
 
 
-def list_all_container_groups():
+def list_all_container_groups(status: str = None):
     url = f"https://api.salad.com/api/public/organizations/{salad_org_id}/projects/{salad_project_name}/containers"
     response = requests.get(url, headers=salad_headers)
-    return response.json()["items"]
+    items = response.json()["items"]
+    if status is not None:
+        items = [item for item in items if item["current_state"]["status"] == status]
+    print(f"Found {len(items)} container groups.")
+    return items
 
 
 def stop_container_group(container_group_name: str):
@@ -303,6 +317,13 @@ def start_all_container_groups():
 
 def delete_all_container_groups():
     for container_group in list_all_container_groups():
+        delete_container_group(container_group["name"])
+
+
+def delete_all_container_groups_with_status(
+    status: str = "stopped",
+):
+    for container_group in list_all_container_groups(status):
         delete_container_group(container_group["name"])
 
 
@@ -351,3 +372,41 @@ def get_signed_upload_url(file_name: str, file_type: str):
         ExpiresIn=604800,  # 7 days
     )
     return response
+
+
+async def delete_empty_queues():
+    async with Session().client("sqs", region_name="us-east-2") as client:
+        paginator = client.get_paginator("list_queues")
+        for page in paginator.paginate():
+            page = await page
+            for queue_url in page["QueueUrls"]:
+                queue_name = queue_url.split("/")[-1]
+                queue_attributes = await client.get_queue_attributes(
+                    QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessages"]
+                )
+                if queue_attributes["Attributes"]["ApproximateNumberOfMessages"] == "0":
+                    print(f"Deleting queue {queue_name}...", flush=True)
+                    await client.delete_queue(QueueUrl=queue_url)
+
+
+def format_gpu_name(gpu_name):
+    """
+    Formats the GPU name to be lowercase with only alphanumeric and hyphens.
+
+    Args:
+    gpu_name (str): The original GPU name.
+
+    Returns:
+    str: The formatted GPU name.
+    """
+    # Convert to lowercase
+    formatted_name = gpu_name.lower()
+    # Replace non-alphanumeric and non-hyphen characters with nothing
+    formatted_name = re.sub(r"[^a-z0-9-]", "", formatted_name)
+
+    return formatted_name
+
+
+def get_benchmark_ids(combos):
+    for gpu, image_name, image, baked, image_size in combos:
+        yield f"{image_name}-{format_gpu_name(gpu['name'])}-{baked}-{image_size}"
