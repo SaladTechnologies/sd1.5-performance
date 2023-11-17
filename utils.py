@@ -410,3 +410,13 @@ def format_gpu_name(gpu_name):
 def get_benchmark_ids(combos):
     for gpu, image_name, image, baked, image_size in combos:
         yield f"{image_name}-{format_gpu_name(gpu['name'])}-{baked}-{image_size}"
+
+
+def get_gpu_classes():
+    url = f"{salad_api_base_url}/organizations/{salad_org_id}/gpu-classes"
+    response = requests.get(url, headers=salad_headers)
+    return [
+        gpu
+        for gpu in response.json()["items"]
+        if gpu["name"] != "Stable Diffusion Compatible"
+    ]
